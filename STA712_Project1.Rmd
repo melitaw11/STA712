@@ -1,0 +1,280 @@
+---
+title: "STA712_Project1"
+author: "Melita Wiles"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lmtest)
+library(ROCR)
+library(tidyverse)
+library(statmod)
+library(car)
+library(MASS)
+library(patchwork)
+library(ggplot2)
+```
+
+```{r}
+# Load data:
+BRFSS <- source("http://www.openintro.org/stat/data/cdc.R")
+```
+
+```{r} 
+# EDA
+
+# Checking for missing values:
+sum(is.na(cdc[2]) == "TRUE") # No missing values in the data set.
+
+# Variable descriptions:
+sum(cdc$exerany == 1)/nrow(cdc)
+sum(cdc$exerany == 0)/nrow(cdc)
+
+cdc$wLOSS <- cdc$weight - cdc$wtdesire
+
+exerany1 <- cdc[which(cdc$exerany == 1),]
+exerany0 <- cdc[which(cdc$exerany == 0),]
+
+# Statistics for exerany == 0:
+summary(exerany0$genhlth)
+summary(exerany0$hlthplan == 1)
+summary(exerany0$smoke100 == 1)
+summary(exerany0$height)
+summary(exerany0$weight)
+summary(exerany0$wtdesire)
+  which(exerany0$wtdesire == 680.0)
+summary(exerany0$age)
+summary(exerany0$gender)
+
+
+summary(exerany0$wLOSS[which(exerany0$wLOSS > 0)])
+summary(exerany1$wLOSS[which(exerany1$wLOSS > 0)])
+
+# Statistics for exerany == 1:
+summary(exerany1$genhlth)
+summary(exerany1$hlthplan == 1)
+summary(exerany1$smoke100 == 1)
+summary(exerany1$height)
+summary(exerany1$weight)
+summary(exerany1$wtdesire)
+  which(exerany1$wtdesire == 601.0)
+summary(exerany1$age)
+summary(exerany1$gender)
+
+plot(cdc$height)
+plot(cdc$weight)
+plot(cdc$wtdesire)
+plot(cdc$age)
+```
+
+
+
+```{r}
+# Research question 1 model: 
+# Make a variable that is weight - desiredWeight named wLOSS, which is the number of pounds someone wants to lose in pounds:
+
+cdc$wLOSS <- cdc$weight - cdc$wtdesire
+which(cdc$wLOSS > 0)
+
+# Is there a relationship between how much weight someone wants to lose, and the probability that they exercise regularly, after accounting for their age, general health, and health coverage?
+m1 <- glm(exerany ~ wLOSS + age + genhlth + hlthplan, data = cdc[which(cdc$wLOSS > 0),], family = binomial)
+
+summary(m1)
+```
+
+```{r}
+# Diagnostics for m1:
+# Quantile residual plots:
+m1a <- data.frame(x = cdc[which(cdc$wLOSS > 0),]$age, residuals = qresid(m1)) %>%
+  ggplot(aes(x = x, y = residuals)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()+ 
+  labs(x = "Age (years)")
+m1dw <- data.frame(x = log(cdc[which(cdc$wLOSS > 0),]$wLOSS), residuals = qresid(m1)) %>%
+  ggplot(aes(x = x, y = residuals)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()+ 
+  labs(x = "Desired Weight Loss (pounds)")
+# Looks good.
+
+m1a + m1dw
+
+# Cook's distance:
+which(cooks.distance(m1) > 0.05)
+# No issues with influential points. 
+
+# VIF:
+vif(m1)
+# No issues with multicolinearity.
+```
+
+
+```{r}
+# Empirical logit plots:
+emplogitPlot <- function(x, y, binsize = NULL, ci = FALSE, probit = FALSE,
+prob = FALSE, main = NULL, xlab = "", ylab = "", lowess.in = FALSE){
+  # x         vector with values of the independent variable
+  # y         vector of binary responses
+  # binsize   integer value specifying bin size (optional)
+  # ci        logical value indicating whether to plot approximate
+  #           confidence intervals (not supported as of 02/08/2015)
+  # probit    logical value indicating whether to plot probits instead
+  #           of logits
+  # prob      logical value indicating whether to plot probabilities
+  #           without transforming
+  #
+  # the rest are the familiar plotting options
+  
+  if(class(y) =="character"){
+   y <- as.numeric(as.factor(y))-1
+   }
+  
+  if (length(x) != length(y))
+    stop("x and y lengths differ")
+  if (any(y < 0 | y > 1))
+    stop("y not between 0 and 1")
+  if (length(x) < 100 & is.null(binsize))
+    stop("Less than 100 observations: specify binsize manually")
+  
+  if (is.null(binsize)) binsize = min(round(length(x)/10), 50)
+  
+  if (probit){
+    link = qnorm
+    if (is.null(main)) main = "Empirical probits"
+  } else {
+    link = function(x) log(x/(1-x))
+    if (is.null(main)) main = "Empirical logits"
+  }
+  
+  sort = order(x)
+  x = x[sort]
+  y = y[sort]
+  a = seq(1, length(x), by=binsize)
+  b = c(a[-1] - 1, length(x))
+  
+  prob = xmean = ns = rep(0, length(a)) # ns is for CIs
+  for (i in 1:length(a)){
+    range = (a[i]):(b[i])
+    prob[i] = mean(y[range])
+    xmean[i] = mean(x[range])
+    ns[i] = b[i] - a[i] + 1 # for CI 
+  }
+  
+  extreme = (prob == 1 | prob == 0)
+  prob[prob == 0] = min(prob[!extreme])
+  prob[prob == 1] = max(prob[!extreme])
+  
+  g = link(prob) # logits (or probits if probit == TRUE)
+  
+  linear.fit = lm(g[!extreme] ~ xmean[!extreme])
+  b0 = linear.fit$coef[1]
+  b1 = linear.fit$coef[2]
+  
+  loess.fit = loess(g[!extreme] ~ xmean[!extreme])
+  
+  plot(xmean, g, main=main, xlab=xlab, ylab=ylab)
+  abline(b0,b1)
+  if(lowess.in ==TRUE){
+  lines(loess.fit$x, loess.fit$fitted, lwd=2, lty=2)
+  }
+}
+
+
+##emplogitPlot(cdc$height, cdc$exerany, xlab = "Height", ylab = "Exercise", main = "Empirical Logit Plot of Exercise and Height")
+##emplogitPlot(cdc$weight, cdc$exerany, xlab = "Weight", ylab = "Exercise", main = "Empirical Logit Plot of Exercise and Weight")
+##emplogitPlot(cdc$age, cdc$exerany, xlab = "Age", ylab = "Exercise", main = "Empirical Logit Plot of Exercise and Age")
+```
+
+
+```{r}
+# Research question 2:
+# How well can we predict whether a patient exercises regularly, using other variables in the data?
+m2Empty <- glm(exerany ~ 1, data = cdc, family = binomial)
+m2Full <- glm(exerany ~ ., data = cdc, family = binomial)
+
+forward_aic <- stepAIC(m2Empty, scope = ~ genhlth + hlthplan + smoke100 + weight + height + wtdesire + age + gender + wLOSS,
+                      direction = "forward",
+                      trace = 0)
+
+forward_bic <- stepAIC(m2Empty, scope = ~ genhlth + hlthplan + smoke100 + weight + height + wtdesire + age + gender+ wLOSS,
+                      direction = "forward",
+                      trace = 0, k = log(nrow(cdc)))
+
+backward_aic <- stepAIC(m2Full, trace = 0)
+
+backward_bic <- stepAIC(m2Full, trace = 0, 
+                            k = log(nrow(cdc)))
+
+summary(forward_aic)
+summary(forward_bic)
+summary(backward_aic)
+summary(backward_bic)
+
+finalm2 <- glm(exerany ~ genhlth + hlthplan + age + height + weight, data = cdc, family = binomial)
+summary(finalm2)
+```
+
+```{r}
+# Diagnostics for m2:
+# Quantile residual plots:
+par(mfrow = c(2,1))
+m2h <- data.frame(x = cdc$height, residuals = qresid(finalm2)) %>%
+  ggplot(aes(x = x, y = residuals)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()+ 
+  labs(x = "Height (inches)", y="Residuals", title = "Quantile Residual Plot with Height")
+m2a <- data.frame(x = cdc$age, residuals = qresid(finalm2)) %>%
+  ggplot(aes(x = x, y = residuals)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()+ 
+  labs(x = "Age (years)", y="Residuals", title = "Quantile Residual Plot with Age")
+m2w <- data.frame(x = cdc$height, residuals = qresid(finalm2)) %>%
+  ggplot(aes(x = x, y = residuals)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()+ 
+  labs(x = "Weight (pounds)", y="Residuals", title = "Quantile Residual Plot with Weight")
+
+
+m2h+m2a+m2w
+# Cook's distance:
+which(cooks.distance(finalm2) > 0.05)
+# No issues with influential points. 
+
+# VIF:
+vif(finalm2)
+# No issues with multicollinearity.
+```
+
+```{r}
+# Prediction metrics for m2:
+# calculating performance metrics using the ROCR package
+
+pred1 <- prediction(finalm2$fitted.values, finalm2$y)
+perf1 <- performance(pred1,"tpr","fpr")
+rocCurve <- data.frame(fpr = perf1@x.values[[1]],
+           tpr = perf1@y.values[[1]],
+           model = "Model 1", length(perf1@x.values[[1]])) |>
+  ggplot(aes(x = fpr, y = tpr)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, lty = 2) +
+  labs(x = "False positive rate (1 - Specificity)",
+       y = "True positive rate (Sensitivity)") +
+  theme_classic()
+
+performance(pred1, "auc")@y.values 
+rocCurve
+
+
+table(ifelse(finalm2$fitted.values > 0.75, 1, 0), cdc$exerany)
+```
+
+
+
